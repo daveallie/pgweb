@@ -2,7 +2,7 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/sosedoff/pgweb/pkg/command"
+	"github.com/daveallie/pgweb/pkg/command"
 )
 
 func SetupMiddlewares(group *gin.RouterGroup) {

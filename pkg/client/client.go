@@ -9,10 +9,10 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/sosedoff/pgweb/pkg/command"
-	"github.com/sosedoff/pgweb/pkg/connection"
-	"github.com/sosedoff/pgweb/pkg/history"
-	"github.com/sosedoff/pgweb/pkg/statements"
+	"github.com/daveallie/pgweb/pkg/command"
+	"github.com/daveallie/pgweb/pkg/connection"
+	"github.com/daveallie/pgweb/pkg/history"
+	"github.com/daveallie/pgweb/pkg/statements"
 )
 
 type Client struct {

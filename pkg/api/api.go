@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sosedoff/pgweb/pkg/bookmarks"
-	"github.com/sosedoff/pgweb/pkg/client"
-	"github.com/sosedoff/pgweb/pkg/command"
-	"github.com/sosedoff/pgweb/pkg/connection"
+	"github.com/daveallie/pgweb/pkg/bookmarks"
+	"github.com/daveallie/pgweb/pkg/client"
+	"github.com/daveallie/pgweb/pkg/command"
+	"github.com/daveallie/pgweb/pkg/connection"
 )
 
 var DbClient *client.Client

@@ -1,9 +1,9 @@
 {
   "name": "pgweb",
   "description": "A web-based frontend to your Postgres database.",
-  "website": "https://github.com/sosedoff/pgweb",
-  "repository": "https://github.com/sosedoff/pgweb",
-  "logo": "https://raw.githubusercontent.com/sosedoff/pgweb/master/static/img/icon.png",
+  "website": "https://github.com/daveallie/pgweb",
+  "repository": "https://github.com/daveallie/pgweb",
+  "logo": "https://raw.githubusercontent.com/daveallie/pgweb/master/static/img/icon.png",
   "success_url": "/",
   "keywords": [
     "postgres",

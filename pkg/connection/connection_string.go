@@ -8,7 +8,7 @@ import (
 	"os/user"
 	"strings"
 
-	"github.com/sosedoff/pgweb/pkg/command"
+	"github.com/daveallie/pgweb/pkg/command"
 )
 
 func currentUser() (string, error) {

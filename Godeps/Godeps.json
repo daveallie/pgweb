@@ -1,5 +1,5 @@
 {
-	"ImportPath": "github.com/sosedoff/pgweb",
+	"ImportPath": "github.com/daveallie/pgweb",
 	"GoVersion": "go1.4",
 	"Deps": [
 		{

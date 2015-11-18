@@ -1,7 +1,7 @@
 FROM golang:1.4.2
 
-COPY . /go/src/github.com/sosedoff/pgweb
-WORKDIR /go/src/github.com/sosedoff/pgweb
+COPY . /go/src/github.com/daveallie/pgweb
+WORKDIR /go/src/github.com/daveallie/pgweb
 
 RUN go get github.com/tools/godep
 

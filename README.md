@@ -60,7 +60,7 @@ pgweb --url postgres://user:password@host:port/database?sslmode=[mode]
 
 ## Deploy on Heroku
 
-[![Heroku Deploy](https://www.herokucdn.com/deploy/button.png)](https://heroku.com/deploy?template=https://github.com/sosedoff/pgweb)
+[![Heroku Deploy](https://www.herokucdn.com/deploy/button.png)](https://heroku.com/deploy?template=https://github.com/daveallie/pgweb)
 
 ## Testing
 
@@ -81,7 +81,7 @@ make test
 - Commit your changes
 - Execute test suite
 - Push your code and open a new pull request
-- Use [issues](https://github.com/sosedoff/pgweb/issues) for any questions
+- Use [issues](https://github.com/daveallie/pgweb/issues) for any questions
 - Check [wiki](https://github.com/sosedoff/pgweb/wiki) for extra documentation
 
 ## Contact
