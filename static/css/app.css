@@ -1,3 +1,11 @@
+html, body {
+    min-height: 100%;
+}
+
+body {
+  overflow-x: scroll;
+}
+
 #main {
   display: none;
 }
@@ -218,7 +226,7 @@
 }
 
 #input {
-  height: 255px;
+  height: 405px; /* 255px; */
   overflow: hidden;
 }
 
@@ -234,22 +242,25 @@
   border-bottom: solid 1px #b8b7b5;
 }
 
+#input .actions .btn-group {
+  float: left;
+  margin-right: 10px;
+}
+
 #input .actions .btn {
   line-height: 30px;
   height: 30px;
   padding: 0px 13px;
   margin: 0px;
   font-size: 13px;
-  color: #fff;
-  border: none;
-  box-shadow: none;
-  background: #7eb54e;
-  float: left;
-  margin-right: 10px;
+  /*color: #fff;*/
+  /*border: none;*/
+  /*box-shadow: none;*/
+  /*background: #7eb54e;*/
 }
 
 #input .actions .btn-default {
-  background: #aaa;
+  /*background: #aaa;*/
 }
 
 #input .actions #query_progress {
@@ -261,22 +272,22 @@
 }
 
 #input .actions .btn:focus {
-  outline: 0 none;
-  box-shadow: 0;
+  /*outline: 0 none;*/
+  /*box-shadow: 0;*/
 }
 
 #input .actions .btn:hover {
-  background: #7eb154;
+  /*background: #7eb154;*/
 }
 
 #input .actions .btn-default:hover {
-  background: #bbb;
+  /*background: #bbb;*/
 }
 
 #output {
   position: absolute;
   left: 0px;
-  top: 256px;
+  top: 406px; /*256px; */
   bottom: 0px;
   right: 0px;
   margin: 0px;
@@ -284,7 +295,11 @@
   overflow: auto;
 }
 
-#output.full {
+#output.full-with-bar {
+  top: 50px;
+}
+
+#output.full, #output.full.full-with-bar{
   top: 0px;
 }
 
@@ -381,7 +396,7 @@
 }
 
 #custom_query {
-  height: 205px;
+  height: 355px; /* 205px; */
 }
 
 #connection_window {

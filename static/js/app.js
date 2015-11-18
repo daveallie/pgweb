@@ -368,6 +368,16 @@ function exportToCSV() {
   win.focus();
 }
 
+function toggleQueryInput() {
+  if ($("#custom_query").is(":visible")) {
+    $("#custom_query").hide();
+    $("#output").addClass("full-with-bar");
+  } else {
+    $("#custom_query").show();
+    $("#output").removeClass("full-with-bar");
+  }
+}
+
 function initEditor() {
   var writeQueryTimeout = null;
   editor = ace.edit("custom_query");
@@ -504,6 +514,10 @@ $(document).ready(function() {
 
   $("#csv").on("click", function() {
     exportToCSV();
+  });
+
+  $("#toggle_query_input").on("click", function() {
+    toggleQueryInput()
   });
 
   $("#results").on("click", "tr", function() {
