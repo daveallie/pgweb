@@ -1,3 +1,33 @@
+## 0.9.1 - 2016-01-25
+
+- Fixes bug with tables context menu
+- Fixes JS bug when query returns no rows
+- Fixes bug with switching between different connection modes
+- Adds AJAX timeout to 5s
+- Adds sidebar reload action on any CREATE/DROP action
+
+## 0.9.0 - 2016-01-19
+
+- Add support for multiple schemas. GH-112
+- Add support for native ssh tunnes. GH-114
+- Add materialized views to list of schema objects
+- Adds a few design tweaks and cleanups
+- Fixes bug with nil result set when fetching rows
+
+## 0.8.0 - 2016-01-11
+
+- Fixes bug with bigint conversions in javascript. Now bigints are encoded as strings. GH-109
+- Adds pagination and simple column filtering to table rows browser. GH-110
+- Adds ability to use pgweb with multiple database sessions. GH-111
+- Adds a few design tweaks and cleanups
+
+## 0.7.0 - 2016-01-05
+
+- Adds sequences to the sidebar panel - GH-100
+- Adds table constrains view - GH-104
+- Adds ability to export table and query rows as JSON/XML - GH-107
+- Updates to UI theme and SQL editor
+
 ## 0.6.3 - 2015-08-16
 
 - Adds PostgreSQL password escaping in web ui, GH-96

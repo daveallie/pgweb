@@ -1,59 +1,163 @@
-var editor;
-var connected = false;
-var bookmarks = {};
+var editor             = null;
+var connected          = false;
+var bookmarks          = {};
+var default_rows_limit = 100;
+var currentObject      = null;
+
+var filterOptions = {
+  "equal":      "= 'DATA'",
+  "not_equal":  "!= 'DATA'",
+  "greater":    "> 'DATA'" ,
+  "greater_eq": ">= 'DATA'",
+  "less":       "< 'DATA'",
+  "less_eq":    "<= 'DATA'",
+  "like":       "LIKE 'DATA'",
+  "ilike":      "ILIKE 'DATA'",
+  "null":       "IS NULL",
+  "not_null":   "IS NOT NULL"
+};
+
+function guid() {
+  function s4() { return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1); }
+  return [s4(), s4(), "-", s4(), "-", s4(), "-", s4(), "-", s4(), s4(), s4()].join("");
+}
+
+function getSessionId() {
+  var id = sessionStorage.getItem("session_id");
+
+  if (!id) {
+    id = guid();
+    sessionStorage.setItem("session_id", id);
+  }
+
+  return id;
+}
+
+function setRowsLimit(num) {
+  localStorage.setItem("rows_limit", num);
+}
+
+function getRowsLimit() {
+  return parseInt(localStorage.getItem("rows_limit") || default_rows_limit);
+}
+
+function getPaginationOffset() {
+  var page  = $(".current-page").data("page");
+  var limit = getRowsLimit();
+  return (page - 1) * limit;
+}
+
+function getPagesCount(rowsCount) {
+  var limit = getRowsLimit();
+  var num = parseInt(rowsCount / limit);
+
+  if ((num * limit) < rowsCount) {
+    num++;
+  }
+
+  return num;
+}
 
 function apiCall(method, path, params, cb) {
+  var timeout = 300000; // 5 mins is enough
+
   $.ajax({
+    timeout: timeout,
     url: "/api" + path,
     method: method,
     cache: false,
     data: params,
+    headers: {
+      "x-session-id": getSessionId()
+    },
     success: function(data) {
       cb(data);
     },
     error: function(xhr, status, data) {
+      if (status == "timeout") {
+        return cb({ error: "Query timeout after " + (timeout / 1000) + "s" });
+      }
+
       cb(jQuery.parseJSON(xhr.responseText));
     }
   });
 }
 
-function getTables(cb)                 { apiCall("get", "/tables", {}, cb); }
-function getTableRows(table, opts, cb) { apiCall("get", "/tables/" + table + "/rows", opts, cb); }
-function getTableStructure(table, cb)  { apiCall("get", "/tables/" + table, {}, cb); }
-function getTableIndexes(table, cb)    { apiCall("get", "/tables/" + table + "/indexes", {}, cb); }
-function getHistory(cb)                { apiCall("get", "/history", {}, cb); }
-function getBookmarks(cb)              { apiCall("get", "/bookmarks", {}, cb); }
-function getSequences(cb)              { apiCall("get", "/sequences", {}, cb); }
+function getObjects(cb)                     { apiCall("get", "/objects", {}, cb); }
+function getTables(cb)                      { apiCall("get", "/tables", {}, cb); }
+function getTableRows(table, opts, cb)      { apiCall("get", "/tables/" + table + "/rows", opts, cb); }
+function getTableStructure(table, opts, cb) { apiCall("get", "/tables/" + table, opts, cb); }
+function getTableIndexes(table, cb)         { apiCall("get", "/tables/" + table + "/indexes", {}, cb); }
+function getTableConstraints(table, cb)     { apiCall("get", "/tables/" + table + "/constraints", {}, cb); }
+function getHistory(cb)                     { apiCall("get", "/history", {}, cb); }
+function getBookmarks(cb)                   { apiCall("get", "/bookmarks", {}, cb); }
+function executeQuery(query, cb)            { apiCall("post", "/query", { query: query }, cb); }
+function explainQuery(query, cb)            { apiCall("post", "/explain", { query: query }, cb); }
+function disconnect(cb)                     { apiCall("post", "/disconnect", {}, cb); }
 
 function encodeQuery(query) {
   return window.btoa(query);
 }
 
-function executeQuery(query, cb) {
-  apiCall("post", "/query", { query: query }, cb);
+function buildSchemaSection(name, objects) {
+  var section = "";
+
+  var titles = {
+    "table":             "Tables",
+    "view":              "Views",
+    "materialized_view": "Materialized Views",
+    "sequence":          "Sequences"
+  };
+
+  var icons = {
+    "table":             '<i class="fa fa-table"></i>',
+    "view":              '<i class="fa fa-table"></i>',
+    "materialized_view": '<i class="fa fa-table"></i>',
+    "sequence":          '<i class="fa fa-circle-o"></i>'
+  };
+
+  var klass = "";
+  if (name == "public") klass = "expanded";
+
+  section += "<div class='schema " + klass + "'>";
+  section += "<div class='schema-name'><i class='fa fa-folder-o'></i><i class='fa fa-folder-open-o'></i> " + name + "</div>";
+  section += "<div class='schema-container'>";
+
+  for (group of ["table", "view", "materialized_view", "sequence"]) {
+    if (objects[group].length == 0) continue;
+
+    group_klass = "";
+    if (name == "public" && group == "table") group_klass = "expanded";
+
+    section += "<div class='schema-group " + group_klass + "'>";
+    section += "<div class='schema-group-title'><i class='fa fa-chevron-right'></i><i class='fa fa-chevron-down'></i> " + titles[group] + " (" + objects[group].length + ")</div>";
+    section += "<ul>"
+
+    for (item of objects[group]) {
+      var id = name + "." + item;
+      section += "<li class='schema-" + group + "' data-type='" + group + "' data-id='" + id + "'>" + icons[group] + "&nbsp;" + item + "</li>";
+    }
+    section += "</ul></div>";
+  }
+
+  section += "</div></div>";
+
+  return section;
 }
 
-function explainQuery(query, cb) {
-  apiCall("post", "/explain", { query: query }, cb);
-}
+function loadSchemas() {
+  $("#objects").html("");
 
-function loadTables() {
-  $("#tables li").remove();
+  getObjects(function(data) {
+    for (schema in data) {
+      $(buildSchemaSection(schema, data[schema])).appendTo("#objects");
+    }
 
-  getTables(function(data) {
-    data.forEach(function(item) {
-      $("<li><span><i class='fa fa-table'></i> " + item + " </span></li>").appendTo("#tables");
-    });
-  });
-}
+    if (Object.keys(data).length == 1) {
+      $(".schema").addClass("expanded");
+    }
 
-function loadSequences() {
-  $("#sequences li").remove();
-
-  getSequences(function(data) {
-    data.forEach(function(item) {
-      $("<li><span><i class='fa fa-chevron-right'></i> " + item + " </span></li>").appendTo("#sequences");
-    });
+    bindContextMenus();
   });
 }
 
@@ -71,8 +175,8 @@ function unescapeHtml(str){
   return e.childNodes.length === 0 ? "" : e.childNodes[0].nodeValue;
 }
 
-function getCurrentTable() {
-  return $("#tables").attr("data-current") || "";
+function getCurrentObject() {
+  return currentObject || { name: "", type: "" };
 }
 
 function resetTable() {
@@ -83,7 +187,7 @@ function resetTable() {
     removeClass("no-crop");
 }
 
-function performTableAction(table, action) {
+function performTableAction(table, action, el) {
   if (action == "truncate" || action == "delete") {
     var message = "Are you sure you want to " + action + " table " + table + " ?";
     if (!confirm(message)) return;
@@ -99,16 +203,16 @@ function performTableAction(table, action) {
     case "delete":
       executeQuery("DROP TABLE " + table, function(data) {
         if (data.error) alert(data.error);
-        loadTables();
-        loadSequences();
+        loadSchemas();
         resetTable();
       });
       break;
     case "export":
-      var filename = table + ".csv"
+      var format = el.data("format");
+      var filename = table + "." + format;
       var query = window.encodeURI("SELECT * FROM " + table);
-      var url = "http://" + window.location.host + "/api/query?format=csv&filename=" + filename + "&query=" + query;
-      var win = window.open(url, "_blank");
+      var url = "http://" + window.location.host + "/api/query?format=" + format + "&filename=" + filename + "&query=" + query;
+      var win  = window.open(url, "_blank");
       win.focus();
       break;
   }
@@ -134,7 +238,7 @@ function buildTable(results, sortColumn, sortOrder) {
     return;
   }
 
-  if (!results.rows) {
+  if (results.rows.length == 0) {
     $("<tr><td>No records found</tr></tr>").appendTo("#results");
     $("#results").addClass("empty");
     return;
@@ -178,13 +282,13 @@ function showQueryHistory() {
 
     setCurrentTab("table_history");
     $("#input").hide();
-    $("#output").addClass("full");
+    $("#body").prop("class", "full");
     $("#results").addClass("no-crop");
   });
 }
 
 function showTableIndexes() {
-  var name = getCurrentTable();
+  var name = getCurrentObject().name;
 
   if (name.length == 0) {
     alert("Please select a table!");
@@ -196,13 +300,31 @@ function showTableIndexes() {
     buildTable(data);
 
     $("#input").hide();
-    $("#output").addClass("full");
+    $("#body").prop("class", "full");
+    $("#results").addClass("no-crop");
+  });
+}
+
+function showTableConstraints() {
+  var name = getCurrentObject().name;
+
+  if (name.length == 0) {
+    alert("Please select a table!");
+    return;
+  }
+
+  getTableConstraints(name, function(data) {
+    setCurrentTab("table_constraints");
+    buildTable(data);
+
+    $("#input").hide();
+    $("#body").prop("class", "full");
     $("#results").addClass("no-crop");
   });
 }
 
 function showTableInfo() {
-  var name = getCurrentTable();
+  var name = getCurrentObject().name;
 
   if (name.length == 0) {
     alert("Please select a table!");
@@ -217,40 +339,100 @@ function showTableInfo() {
     $("#table_rows_count").text(data.rows_count);
     $("#table_encoding").text("Unknown");
   });
+
+  buildTableFilters(name, getCurrentObject().type);
+}
+
+function updatePaginator(pagination) {
+  if (!pagination) {
+    $(".current-page").data("page", 1).data("pages", 1);
+    $("button.page").text("1 of 1");
+    $(".prev-page, .next-page").prop("disabled", "disabled");
+    return;
+  }
+
+  $(".current-page").
+    data("page", pagination.page).
+    data("pages", pagination.pages_count);
+
+  if (pagination.page > 1) {
+    $(".prev-page").prop("disabled", "");
+  }
+  else {
+    $(".prev-page").prop("disabled", "disabled");
+  }
+
+  if (pagination.pages_count > 1 && pagination.page < pagination.pages_count) {
+    $(".next-page").prop("disabled", "");
+  }
+  else {
+    $(".next-page").prop("disabled", "disabled");
+  }
+
+  $("#total_records").text(pagination.rows_count);
+  if (pagination.pages_count == 0) pagination.pages_count = 1;
+  $("button.page").text(pagination.page + " of " + pagination.pages_count);
 }
 
 function showTableContent(sortColumn, sortOrder) {
-  var name = getCurrentTable();
+  var name = getCurrentObject().name;
 
   if (name.length == 0) {
     alert("Please select a table!");
     return;
   }
 
-  getTableRows(name, { limit: 100, sort_column: sortColumn, sort_order: sortOrder }, function(data) {
-    buildTable(data, sortColumn, sortOrder);
-    setCurrentTab("table_content");
+  var opts = {
+    limit:       getRowsLimit(),
+    offset:      getPaginationOffset(),
+    sort_column: sortColumn,
+    sort_order:  sortOrder
+  };
 
+  var filter = {
+    column: $(".filters select.column").val(),
+    op:     $(".filters select.filter").val(),
+    input:  $(".filters input").val()
+  };
+
+  // Apply filtering only if column is selected
+  if (filter.column && filter.op) {
+    var where = [
+      '"' + filter.column + '"',
+      filterOptions[filter.op].replace("DATA", filter.input)
+    ].join(" ");
+
+    opts["where"] = where;
+  }
+
+  getTableRows(name, opts, function(data) {
     $("#results").attr("data-mode", "browse");
     $("#input").hide();
-    $("#output").addClass("full");
+    $("#body").prop("class", "with-pagination");
+
+    buildTable(data, sortColumn, sortOrder);
+    setCurrentTab("table_content");
+    updatePaginator(data.pagination);
   });
 }
 
 function showTableStructure() {
-  var name = getCurrentTable();
+  var name = getCurrentObject().name;
 
   if (name.length == 0) {
     alert("Please select a table!");
     return;
   }
 
-  getTableStructure(name, function(data) {
-    setCurrentTab("table_structure");
-    buildTable(data);
+  setCurrentTab("table_structure");
 
-    $("#input").hide();
-    $("#output").addClass("full");
+  $("#input").hide();
+  $("#body").prop("class", "full");
+
+  console.log(getCurrentObject());
+
+  getTableStructure(name, { type: getCurrentObject().type }, function(data) {
+    buildTable(data);
     $("#results").addClass("no-crop");
   });
 }
@@ -260,7 +442,7 @@ function showQueryPanel() {
   editor.focus();
 
   $("#input").show();
-  $("#output").removeClass("full");
+  $("#body").prop("class", "")
 }
 
 function showConnectionPanel() {
@@ -279,7 +461,7 @@ function showConnectionPanel() {
     });
 
     $("#input").hide();
-    $("#output").addClass("full");
+    $("#body").addClass("full");
   });
 }
 
@@ -289,20 +471,20 @@ function showActivityPanel() {
   apiCall("get", "/activity", {}, function(data) {
     buildTable(data);
     $("#input").hide();
-    $("#output").addClass("full");
+    $("#body").addClass("full");
   });
 }
 
 function runQuery() {
   setCurrentTab("table_query");
 
-  $("#run, #explain, #csv").prop("disabled", true);
+  $("#run, #explain, #csv, #json, #xml").prop("disabled", true);
   $("#query_progress").show();
 
   var query = $.trim(editor.getSelectedText() || editor.getValue());
 
   if (query.length == 0) {
-    $("#run, #explain, #csv").prop("disabled", false);
+    $("#run, #explain, #csv, #json, #xml").prop("disabled", false);
     $("#query_progress").hide();
     return;
   }
@@ -310,21 +492,20 @@ function runQuery() {
   executeQuery(query, function(data) {
     buildTable(data);
 
-    $("#run, #explain, #csv").prop("disabled", false);
+    $("#run, #explain, #csv, #json, #xml").prop("disabled", false);
     $("#query_progress").hide();
     $("#input").show();
-    $("#output").removeClass("full");
+    $("#body").removeClass("full");
 
     if (query.toLowerCase().indexOf("explain") != -1) {
       $("#results").addClass("no-crop");
     }
 
-    var re = /(create|drop) table/i;
+    var re = /(create|drop)\s/i;
 
-    // Refresh tables list if table was added or removed
+    // Reload objects list if anything was created/deleted
     if (query.match(re)) {
-      loadTables();
-      loadSequences();
+      loadSchemas();
     }
   });
 }
@@ -332,13 +513,13 @@ function runQuery() {
 function runExplain() {
   setCurrentTab("table_query");
 
-  $("#run, #explain, #csv").prop("disabled", true);
+  $("#run, #explain, #csv, #json, #xml").prop("disabled", true);
   $("#query_progress").show();
 
   var query = $.trim(editor.getValue());
 
   if (query.length == 0) {
-    $("#run, #explain, #csv").prop("disabled", false);
+    $("#run, #explain, #csv, #json, #xml").prop("disabled", false);
     $("#query_progress").hide();
     return;
   }
@@ -346,22 +527,22 @@ function runExplain() {
   explainQuery(query, function(data) {
     buildTable(data);
 
-    $("#run, #explain, #csv").prop("disabled", false);
+    $("#run, #explain, #csv, #json, #xml").prop("disabled", false);
     $("#query_progress").hide();
     $("#input").show();
-    $("#output").removeClass("full");
+    $("#body").removeClass("full");
     $("#results").addClass("no-crop");
   });
 }
 
-function exportToCSV() {
+function exportTo(format) {
   var query = $.trim(editor.getValue());
 
   if (query.length == 0) {
     return;
   }
 
-  var url = "http://" + window.location.host + "/api/query?format=csv&query=" + encodeQuery(query);
+  var url = "http://" + window.location.host + "/api/query?format=" + format + "&query=" + encodeQuery(query);
   var win = window.open(url, '_blank');
 
   setCurrentTab("table_query");
@@ -378,10 +559,31 @@ function toggleQueryInput() {
   }
 }
 
+function buildTableFilters(name, type) {
+  getTableStructure(name, { type: type }, function(data) {
+    if (data.rows.length == 0) {
+      $("#pagination .filters").hide();
+    }
+    else {
+      $("#pagination .filters").show();
+    }
+
+    $("#pagination select.column").html("<option value='' selected>Select column</option>");
+
+    for (row of data.rows) {
+      var el = $("<option/>").attr("value", row[0]).text(row[0]);
+      $("#pagination select.column").append(el);
+    }
+  });
+}
+
 function initEditor() {
   var writeQueryTimeout = null;
   editor = ace.edit("custom_query");
 
+  editor.setFontSize(13);
+  editor.setTheme("ace/theme/tomorrow");
+  editor.setShowPrintMargin(false);
   editor.getSession().setMode("ace/mode/pgsql");
   editor.getSession().setTabSize(2);
   editor.getSession().setUseSoftTabs(true);
@@ -471,7 +673,7 @@ function getConnectionString() {
   var mode = $(".connection-group-switch button.active").attr("data");
   var ssl  = $("#connection_ssl").val();
 
-  if (mode == "standard") {
+  if (mode == "standard" || mode == "ssh") {
     var host = $("#pg_host").val();
     var port = $("#pg_port").val();
     var user = $("#pg_user").val();
@@ -495,14 +697,30 @@ function getConnectionString() {
   return url;
 }
 
+function bindContextMenus() {
+  $(".schema-group ul").each(function(id, el) {
+    $(el).contextmenu({
+      target: "#tables_context_menu",
+      scopes: "li.schema-table",
+      onItem: function(context, e) {
+        var el      = $(e.target);
+        var table   = $(context[0]).data("id");
+        var action  = el.data("action");
+        performTableAction(table, action, el);
+      }
+    });
+  });
+}
+
 $(document).ready(function() {
-  $("#table_content").on("click",    function() { showTableContent();    });
-  $("#table_structure").on("click",  function() { showTableStructure();  });
-  $("#table_indexes").on("click",    function() { showTableIndexes();    });
-  $("#table_history").on("click",    function() { showQueryHistory();    });
-  $("#table_query").on("click",      function() { showQueryPanel();      });
-  $("#table_connection").on("click", function() { showConnectionPanel(); });
-  $("#table_activity").on("click",   function() { showActivityPanel();   });
+  $("#table_content").on("click",     function() { showTableContent();     });
+  $("#table_structure").on("click",   function() { showTableStructure();   });
+  $("#table_indexes").on("click",     function() { showTableIndexes();     });
+  $("#table_constraints").on("click", function() { showTableConstraints(); });
+  $("#table_history").on("click",     function() { showQueryHistory();     });
+  $("#table_query").on("click",       function() { showQueryPanel();       });
+  $("#table_connection").on("click",  function() { showConnectionPanel();  });
+  $("#table_activity").on("click",    function() { showActivityPanel();    });
 
   $("#run").on("click", function() {
     runQuery();
@@ -513,7 +731,15 @@ $(document).ready(function() {
   });
 
   $("#csv").on("click", function() {
-    exportToCSV();
+    exportTo("csv");
+  });
+
+  $("#json").on("click", function() {
+    exportTo("json");
+  });
+
+  $("#xml").on("click", function() {
+    exportTo("xml");
   });
 
   $("#toggle_query_input").on("click", function() {
@@ -523,6 +749,29 @@ $(document).ready(function() {
   $("#results").on("click", "tr", function() {
     $("#results tr.selected").removeClass();
     $(this).addClass("selected");
+  });
+
+  $("#objects").on("click", ".schema-group-title", function(e) {
+    $(this).parent().toggleClass("expanded");
+  });
+
+  $("#objects").on("click", ".schema-name", function(e) {
+    $(this).parent().toggleClass("expanded");
+  });
+
+  $("#objects").on("click", "li", function(e) {
+    currentObject = {
+      name: $(this).data("id"),
+      type: $(this).data("type")
+    };
+
+    $("#objects li").removeClass("active");
+    $(this).addClass("active");
+    $(".current-page").data("page", 1);
+    $(".filters select, .filters input").val("");
+
+    showTableInfo();
+    showTableContent();
   });
 
   $("#results").on("click", "th", function(e) {
@@ -563,40 +812,82 @@ $(document).ready(function() {
     $(this).html(textarea).css("max-height", "200px");
   });
 
-  $("#tables").on("click", "li", function() {
-    $("#tables li.selected").removeClass("selected");
-    $("#sequences li.selected").removeClass("selected");
-    $(this).addClass("selected");
-    $("#tables").attr("data-current", $.trim($(this).text()));
-
-    showTableContent();
-    showTableInfo();
+  $("#refresh_tables").on("click", function() {
+    loadSchemas();
   });
 
-  $("#tables").contextmenu({
-    target: "#tables_context_menu",
-    scopes: "li",
-    onItem: function(context, e) {
-      var table   = $.trim($(context[0]).text());
-      var action  = $(e.target).data("action");
-      performTableAction(table, action);
+  $("#rows_filter").on("submit", function(e) {
+    e.preventDefault();
+    $(".current-page").data("page", 1);
+
+    var column = $(this).find("select.column").val();
+    var filter = $(this).find("select.filter").val();
+    var query  = $.trim($(this).find("input").val());
+
+    if (filter && filterOptions[filter].indexOf("DATA") > 0 && query == "") {
+      alert("Please specify filter query");
+      return
+    }
+
+    showTableContent();
+  });
+
+  $(".change-limit").on("click", function() {
+    var limit = prompt("Please specify a new rows limit", getRowsLimit());
+
+    if (limit && limit >= 1) {
+      $(".current-page").data("page", 1);
+      setRowsLimit(limit);
+      showTableContent();
     }
   });
 
-  $("#sequences").on("click", "li", function() {
-    $("#tables li.selected").removeClass("selected");
-    $("#sequences li.selected").removeClass("selected");
+  $("select.filter").on("change", function(e) {
+    var val = $(this).val();
 
-    $(this).addClass("selected");
-    $("#tables").attr("data-current", $.trim($(this).text()));
-
-    showTableContent();
-    $(".table-information ul").hide();
+    if (["null", "not_null"].indexOf(val) >= 0) {
+      $(".filters input").hide().val("");
+    }
+    else {
+      $(".filters input").show();
+    }
   });
 
-  $("#refresh_tables").on("click", function() {
-    loadTables();
-    loadSequences();
+  $("button.reset-filters").on("click", function() {
+    $(".filters select, .filters input").val("");
+    showTableContent();
+  });
+
+  $("#pagination .next-page").on("click", function() {
+    var current = $(".current-page").data("page");
+    var total   = $(".current-page").data("pages");
+
+    if (total > current) {
+      $(".current-page").data("page", current + 1);
+      showTableContent();
+
+      if (current + 1 == total) {
+        $(this).prop("disabled", "disabled");
+      }
+    }
+
+    if (current > 1) {
+      $(".prev-page").prop("disabled", "");
+    }
+  });
+
+  $("#pagination .prev-page").on("click", function() {
+    var current = $(".current-page").data("page");
+
+    if (current > 1) {
+      $(".current-page").data("page", current - 1);
+      $(".next-page").prop("disabled", "");
+      showTableContent();
+    }
+
+    if (current == 1) {
+      $(this).prop("disabled", "disabled");
+    }
   });
 
   $("#edit_connection").on("click", function() {
@@ -605,6 +896,13 @@ $(document).ready(function() {
     }
 
     showConnectionSettings();
+  });
+
+  $("#close_connection").on("click", function() {
+    disconnect(function() {
+      showConnectionSettings();
+      $("#close_connection_window").hide();
+    });
   });
 
   $("#close_connection_window").on("click", function() {
@@ -633,6 +931,7 @@ $(document).ready(function() {
       case "scheme":
         $(".connection-scheme-group").show();
         $(".connection-standard-group").hide();
+        $(".connection-ssh-group").hide();
         return;
       case "standard":
         $(".connection-scheme-group").hide();
@@ -670,22 +969,47 @@ $(document).ready(function() {
     $("#pg_password").val(item.password);
     $("#pg_db").val(item.database);
     $("#connection_ssl").val(item.ssl);
+
+    if (Object.keys(item.ssh).length > 0) {
+      $("#ssh_host").val(item.ssh.host);
+      $("#ssh_port").val(item.ssh.port);
+      $("#ssh_user").val(item.ssh.user);
+      $("#ssh_password").val(item.ssh.password);
+      $("#connection_ssh").click();
+    }
+    else {
+      $("#ssh_host").val("");
+      $("#ssh_port").val("");
+      $("#ssh_user").val("");
+      $("#ssh_password").val("");
+      $(".connection-ssh-group").hide();
+    }
   });
 
   $("#connection_form").on("submit", function(e) {
     e.preventDefault();
 
     var button = $(this).children("button");
-    var url = getConnectionString();
+    var params = {
+      url: getConnectionString()
+    };
 
-    if (url.length == 0) {
+    if (params.url.length == 0) {
       return;
+    }
+
+    if ($(".connection-group-switch button.active").attr("data") == "ssh") {
+      params["ssh"]          = 1
+      params["ssh_host"]     = $("#ssh_host").val();
+      params["ssh_port"]     = $("#ssh_port").val();
+      params["ssh_user"]     = $("#ssh_user").val();
+      params["ssh_password"] = $("#ssh_password").val();
     }
 
     $("#connection_error").hide();
     button.prop("disabled", true).text("Please wait...");
 
-    apiCall("post", "/connect", { url: url }, function(resp) {
+    apiCall("post", "/connect", params, function(resp) {
       button.prop("disabled", false).text("Connect");
 
       if (resp.error) {
@@ -694,8 +1018,7 @@ $(document).ready(function() {
       }
       else {
         connected = true;
-        loadTables();
-        loadSequences();
+        loadSchemas();
 
         $("#connection_window").hide();
         $("#current_database").text(resp.current_database);
@@ -714,8 +1037,7 @@ $(document).ready(function() {
     }
     else {
       connected = true;
-      loadTables();
-      loadSequences();
+      loadSchemas();
 
       $("#current_database").text(resp.current_database);
       $("#main").show();

@@ -1,4 +1,4 @@
-FROM golang:1.4.2
+FROM golang:1.5
 
 COPY . /go/src/github.com/daveallie/pgweb
 WORKDIR /go/src/github.com/daveallie/pgweb

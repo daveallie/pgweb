@@ -1,10 +1,10 @@
 package client
 
 import (
-	"bytes"
-	"encoding/csv"
 	"fmt"
+	neturl "net/url"
 	"reflect"
+	"strings"
 
 	_ "github.com/lib/pq"
 
@@ -12,27 +12,32 @@ import (
 	"github.com/daveallie/pgweb/pkg/command"
 	"github.com/daveallie/pgweb/pkg/connection"
 	"github.com/daveallie/pgweb/pkg/history"
+	"github.com/daveallie/pgweb/pkg/shared"
 	"github.com/daveallie/pgweb/pkg/statements"
 )
 
 type Client struct {
 	db               *sqlx.DB
-	History          []history.Record
-	ConnectionString string
-}
-
-type Row []interface{}
-
-type Result struct {
-	Columns []string `json:"columns"`
-	Rows    []Row    `json:"rows"`
+	tunnel           *Tunnel
+	History          []history.Record `json:"history"`
+	ConnectionString string           `json:"connection_string"`
 }
 
 // Struct to hold table rows browsing options
 type RowsOptions struct {
+	Where      string // Custom filter
+	Offset     int    // Number of rows to skip
 	Limit      int    // Number of rows to fetch
 	SortColumn string // Column to sort by
 	SortOrder  string // Sort direction (ASC, DESC)
+}
+
+func getSchemaAndTable(str string) (string, string) {
+	chunks := strings.Split(str, ".")
+	if len(chunks) == 1 {
+		return "public", chunks[0]
+	}
+	return chunks[0], chunks[1]
 }
 
 func New() (*Client, error) {
@@ -47,7 +52,6 @@ func New() (*Client, error) {
 	}
 
 	db, err := sqlx.Open("postgres", str)
-
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +65,38 @@ func New() (*Client, error) {
 	return &client, nil
 }
 
-func NewFromUrl(url string) (*Client, error) {
+func NewFromUrl(url string, sshInfo *shared.SSHInfo) (*Client, error) {
+	var tunnel *Tunnel
+
+	if sshInfo != nil {
+		if command.Opts.Debug {
+			fmt.Println("Opening SSH tunnel for:", sshInfo)
+		}
+
+		tunnel, err := NewTunnel(sshInfo, url)
+		if err != nil {
+			tunnel.Close()
+			return nil, err
+		}
+
+		err = tunnel.Configure()
+		if err != nil {
+			tunnel.Close()
+			return nil, err
+		}
+
+		go tunnel.Start()
+
+		uri, err := neturl.Parse(url)
+		if err != nil {
+			tunnel.Close()
+			return nil, err
+		}
+
+		// Override remote postgres port with local proxy port
+		url = strings.Replace(url, uri.Host, fmt.Sprintf("127.0.0.1:%v", tunnel.Port), 1)
+	}
+
 	if command.Opts.Debug {
 		fmt.Println("Creating a new client for:", url)
 	}
@@ -73,6 +108,7 @@ func NewFromUrl(url string) (*Client, error) {
 
 	client := Client{
 		db:               db,
+		tunnel:           tunnel,
 		ConnectionString: url,
 		History:          history.New(),
 	}
@@ -96,16 +132,26 @@ func (client *Client) Schemas() ([]string, error) {
 	return client.fetchRows(statements.PG_SCHEMAS)
 }
 
-func (client *Client) Tables() ([]string, error) {
-	return client.fetchRows(statements.PG_TABLES)
+func (client *Client) Objects() (*Result, error) {
+	return client.query(statements.PG_OBJECTS)
 }
 
 func (client *Client) Table(table string) (*Result, error) {
-	return client.query(statements.PG_TABLE_SCHEMA, table)
+	schema, table := getSchemaAndTable(table)
+	return client.query(statements.PG_TABLE_SCHEMA, schema, table)
+}
+
+func (client *Client) MaterializedView(name string) (*Result, error) {
+	return client.query(statements.PG_MATERIALIZED_VIEW_SCHEMA, name)
 }
 
 func (client *Client) TableRows(table string, opts RowsOptions) (*Result, error) {
-	sql := fmt.Sprintf(`SELECT * FROM "%s"`, table)
+	schema, table := getSchemaAndTable(table)
+	sql := fmt.Sprintf(`SELECT * FROM "%s"."%s"`, schema, table)
+
+	if opts.Where != "" {
+		sql += fmt.Sprintf(" WHERE %s", opts.Where)
+	}
 
 	if opts.SortColumn != "" {
 		if opts.SortOrder == "" {
@@ -119,6 +165,21 @@ func (client *Client) TableRows(table string, opts RowsOptions) (*Result, error)
 		sql += fmt.Sprintf(" LIMIT %d", opts.Limit)
 	}
 
+	if opts.Offset > 0 {
+		sql += fmt.Sprintf(" OFFSET %d", opts.Offset)
+	}
+
+	return client.query(sql)
+}
+
+func (client *Client) TableRowsCount(table string, opts RowsOptions) (*Result, error) {
+	schema, table := getSchemaAndTable(table)
+	sql := fmt.Sprintf(`SELECT COUNT(1) FROM "%s"."%s"`, schema, table)
+
+	if opts.Where != "" {
+		sql += fmt.Sprintf(" WHERE %s", opts.Where)
+	}
+
 	return client.query(sql)
 }
 
@@ -127,7 +188,8 @@ func (client *Client) TableInfo(table string) (*Result, error) {
 }
 
 func (client *Client) TableIndexes(table string) (*Result, error) {
-	res, err := client.query(statements.PG_TABLE_INDEXES, table)
+	schema, table := getSchemaAndTable(table)
+	res, err := client.query(statements.PG_TABLE_INDEXES, schema, table)
 
 	if err != nil {
 		return nil, err
@@ -136,8 +198,15 @@ func (client *Client) TableIndexes(table string) (*Result, error) {
 	return res, err
 }
 
-func (client *Client) Sequences() ([]string, error) {
-	return client.fetchRows(statements.PG_SEQUENCES)
+func (client *Client) TableConstraints(table string) (*Result, error) {
+	schema, table := getSchemaAndTable(table)
+	res, err := client.query(statements.PG_TABLE_CONSTRAINTS, schema, table)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return res, err
 }
 
 // Returns all active queriers on the server
@@ -149,7 +218,7 @@ func (client *Client) Query(query string) (*Result, error) {
 	res, err := client.query(query)
 
 	// Save history records only if query did not fail
-	if err == nil {
+	if err == nil && !client.hasHistoryRecord(query) {
 		client.History = append(client.History, history.NewRecord(query))
 	}
 
@@ -170,7 +239,15 @@ func (client *Client) query(query string, args ...interface{}) (*Result, error) 
 		return nil, err
 	}
 
-	result := Result{Columns: cols}
+	// Make sure to never return null colums
+	if cols == nil {
+		cols = []string{}
+	}
+
+	result := Result{
+		Columns: cols,
+		Rows:    []Row{},
+	}
 
 	for rows.Next() {
 		obj, err := rows.SliceScan()
@@ -192,59 +269,21 @@ func (client *Client) query(query string, args ...interface{}) (*Result, error) 
 		}
 	}
 
+	result.PrepareBigints()
+
 	return &result, nil
-}
-
-func (res *Result) Format() []map[string]interface{} {
-	var items []map[string]interface{}
-
-	for _, row := range res.Rows {
-		item := make(map[string]interface{})
-
-		for i, c := range res.Columns {
-			item[c] = row[i]
-		}
-
-		items = append(items, item)
-	}
-
-	return items
-}
-
-func (res *Result) CSV() []byte {
-	buff := &bytes.Buffer{}
-	writer := csv.NewWriter(buff)
-
-	writer.Write(res.Columns)
-
-	for _, row := range res.Rows {
-		record := make([]string, len(res.Columns))
-
-		for i, item := range row {
-			if item != nil {
-				record[i] = fmt.Sprintf("%v", item)
-			} else {
-				record[i] = ""
-			}
-		}
-
-		err := writer.Write(record)
-
-		if err != nil {
-			fmt.Println(err)
-			break
-		}
-	}
-
-	writer.Flush()
-	return buff.Bytes()
 }
 
 // Close database connection
 func (client *Client) Close() error {
+	if client.tunnel != nil {
+		client.tunnel.Close()
+	}
+
 	if client.db != nil {
 		return client.db.Close()
 	}
+
 	return nil
 }
 
@@ -264,4 +303,17 @@ func (client *Client) fetchRows(q string) ([]string, error) {
 	}
 
 	return results, nil
+}
+
+func (client *Client) hasHistoryRecord(query string) bool {
+	result := false
+
+	for _, record := range client.History {
+		if record.Query == query {
+			result = true
+			break
+		}
+	}
+
+	return result
 }

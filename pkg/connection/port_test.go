@@ -19,7 +19,7 @@ func Test_portAvailable(t *testing.T) {
 
 	serv, err := net.Listen("tcp", "127.0.0.1:8081")
 	if err != nil {
-		fmt.Println(os.Stderr, "Unable to start test tcp listener:", err)
+		fmt.Fprintln(os.Stderr, "Unable to start test tcp listener:", err)
 		t.Fail()
 		return
 	}
@@ -44,13 +44,13 @@ func Test_getAvailablePort(t *testing.T) {
 		t.Skip("FIXME")
 	}
 
-	port, err := getAvailablePort(8081, 1)
+	port, err := AvailablePort(8081, 1)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 8081, port)
 
 	serv, err := net.Listen("tcp", "127.0.0.1:8081")
 	if err != nil {
-		fmt.Println(os.Stderr, "Unable to start test tcp listener:", err)
+		fmt.Fprintln(os.Stderr, "Unable to start test tcp listener:", err)
 		t.Fail()
 		return
 	}
@@ -65,11 +65,11 @@ func Test_getAvailablePort(t *testing.T) {
 		}
 	}()
 
-	port, err = getAvailablePort(8081, 0)
+	port, err = AvailablePort(8081, 0)
 	assert.EqualError(t, err, "No available port")
 	assert.Equal(t, -1, port)
 
-	port, err = getAvailablePort(8081, 1)
+	port, err = AvailablePort(8081, 1)
 	assert.Equal(t, nil, err)
 	assert.Equal(t, 8082, port)
 }

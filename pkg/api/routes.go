@@ -21,18 +21,23 @@ func SetupRoutes(router *gin.Engine) {
 	{
 		SetupMiddlewares(api)
 
+		if command.Opts.Sessions {
+			api.GET("/sessions", GetSessions)
+		}
+
 		api.GET("/info", GetInfo)
 		api.POST("/connect", Connect)
+		api.POST("/disconnect", Disconnect)
 		api.GET("/databases", GetDatabases)
 		api.GET("/connection", GetConnectionInfo)
-		api.GET("/sequences", GetSequences)
 		api.GET("/activity", GetActivity)
 		api.GET("/schemas", GetSchemas)
-		api.GET("/tables", GetTables)
+		api.GET("/objects", GetObjects)
 		api.GET("/tables/:table", GetTable)
 		api.GET("/tables/:table/rows", GetTableRows)
 		api.GET("/tables/:table/info", GetTableInfo)
 		api.GET("/tables/:table/indexes", GetTableIndexes)
+		api.GET("/tables/:table/constraints", GetTableConstraints)
 		api.GET("/query", RunQuery)
 		api.POST("/query", RunQuery)
 		api.GET("/explain", ExplainQuery)

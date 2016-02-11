@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,9 +12,41 @@ import (
 	"github.com/daveallie/pgweb/pkg/client"
 	"github.com/daveallie/pgweb/pkg/command"
 	"github.com/daveallie/pgweb/pkg/connection"
+	"github.com/daveallie/pgweb/pkg/shared"
 )
 
-var DbClient *client.Client
+var (
+	DbClient   *client.Client
+	DbSessions = map[string]*client.Client{}
+)
+
+func DB(c *gin.Context) *client.Client {
+	if command.Opts.Sessions {
+		return DbSessions[getSessionId(c)]
+	} else {
+		return DbClient
+	}
+}
+
+func setClient(c *gin.Context, newClient *client.Client) error {
+	currentClient := DB(c)
+	if currentClient != nil {
+		currentClient.Close()
+	}
+
+	if !command.Opts.Sessions {
+		DbClient = newClient
+		return nil
+	}
+
+	sessionId := getSessionId(c)
+	if sessionId == "" {
+		return errors.New("Session ID is required")
+	}
+
+	DbSessions[sessionId] = newClient
+	return nil
+}
 
 func GetHome(c *gin.Context) {
 	serveStaticAsset("/index.html", c)
@@ -25,7 +56,19 @@ func GetAsset(c *gin.Context) {
 	serveStaticAsset(c.Params.ByName("path"), c)
 }
 
+func GetSessions(c *gin.Context) {
+	// In debug mode endpoint will return a lot of sensitive information
+	// like full database connection string and all query history.
+	if command.Opts.Debug {
+		c.JSON(200, DbSessions)
+		return
+	}
+
+	c.JSON(200, map[string]int{"sessions": len(DbSessions)})
+}
+
 func Connect(c *gin.Context) {
+	var sshInfo *shared.SSHInfo
 	url := c.Request.FormValue("url")
 
 	if url == "" {
@@ -41,7 +84,11 @@ func Connect(c *gin.Context) {
 		return
 	}
 
-	cl, err := client.NewFromUrl(url)
+	if c.Request.FormValue("ssh") != "" {
+		sshInfo = parseSshInfo(c)
+	}
+
+	cl, err := client.NewFromUrl(url, sshInfo)
 	if err != nil {
 		c.JSON(400, Error{err.Error()})
 		return
@@ -54,21 +101,49 @@ func Connect(c *gin.Context) {
 	}
 
 	info, err := cl.Info()
-
 	if err == nil {
-		if DbClient != nil {
-			DbClient.Close()
+		err = setClient(c, cl)
+		if err != nil {
+			cl.Close()
+			c.JSON(400, Error{err.Error()})
+			return
 		}
-
-		DbClient = cl
 	}
 
 	c.JSON(200, info.Format()[0])
 }
 
+func Disconnect(c *gin.Context) {
+	conn := DB(c)
+
+	if conn == nil {
+		c.JSON(400, Error{"Not connected"})
+		return
+	}
+
+	err := conn.Close()
+	if err != nil {
+		c.JSON(400, Error{err.Error()})
+		return
+	}
+
+	c.JSON(200, map[string]bool{"success": true})
+}
+
 func GetDatabases(c *gin.Context) {
-	names, err := DbClient.Databases()
+	names, err := DB(c).Databases()
 	serveResult(names, err, c)
+}
+
+func GetObjects(c *gin.Context) {
+	result, err := DB(c).Objects()
+	if err != nil {
+		c.JSON(400, NewError(err))
+		return
+	}
+
+	objects := client.ObjectsFromResult(result)
+	c.JSON(200, objects)
 }
 
 func RunQuery(c *gin.Context) {
@@ -94,52 +169,77 @@ func ExplainQuery(c *gin.Context) {
 }
 
 func GetSchemas(c *gin.Context) {
-	names, err := DbClient.Schemas()
-	serveResult(names, err, c)
-}
-
-func GetTables(c *gin.Context) {
-	names, err := DbClient.Tables()
-	serveResult(names, err, c)
+	res, err := DB(c).Schemas()
+	serveResult(res, err, c)
 }
 
 func GetTable(c *gin.Context) {
-	res, err := DbClient.Table(c.Params.ByName("table"))
+	var res *client.Result
+	var err error
+
+	if c.Request.FormValue("type") == "materialized_view" {
+		res, err = DB(c).MaterializedView(c.Params.ByName("table"))
+	} else {
+		res, err = DB(c).Table(c.Params.ByName("table"))
+	}
+
 	serveResult(res, err, c)
 }
 
 func GetTableRows(c *gin.Context) {
-	limit := 1000 // Number of rows to fetch
-	limitVal := c.Request.FormValue("limit")
+	offset, err := parseIntFormValue(c, "offset", 0)
+	if err != nil {
+		c.JSON(400, NewError(err))
+		return
+	}
 
-	if limitVal != "" {
-		num, err := strconv.Atoi(limitVal)
-
-		if err != nil {
-			c.JSON(400, Error{"Invalid limit value"})
-			return
-		}
-
-		if num <= 0 {
-			c.JSON(400, Error{"Limit should be greater than 0"})
-			return
-		}
-
-		limit = num
+	limit, err := parseIntFormValue(c, "limit", 100)
+	if err != nil {
+		c.JSON(400, NewError(err))
+		return
 	}
 
 	opts := client.RowsOptions{
 		Limit:      limit,
+		Offset:     offset,
 		SortColumn: c.Request.FormValue("sort_column"),
 		SortOrder:  c.Request.FormValue("sort_order"),
+		Where:      c.Request.FormValue("where"),
 	}
 
-	res, err := DbClient.TableRows(c.Params.ByName("table"), opts)
+	res, err := DB(c).TableRows(c.Params.ByName("table"), opts)
+	if err != nil {
+		c.JSON(400, NewError(err))
+		return
+	}
+
+	countRes, err := DB(c).TableRowsCount(c.Params.ByName("table"), opts)
+	if err != nil {
+		c.JSON(400, NewError(err))
+		return
+	}
+
+	numFetch := int64(opts.Limit)
+	numOffset := int64(opts.Offset)
+	numRows := countRes.Rows[0][0].(int64)
+	numPages := numRows / numFetch
+
+	if numPages*numFetch < numRows {
+		numPages++
+	}
+
+	res.Pagination = &client.Pagination{
+		Rows:    numRows,
+		Page:    (numOffset / numFetch) + 1,
+		Pages:   numPages,
+		PerPage: numFetch,
+	}
+
 	serveResult(res, err, c)
 }
 
 func GetTableInfo(c *gin.Context) {
-	res, err := DbClient.TableInfo(c.Params.ByName("table"))
+	res, err := DB(c).TableInfo(c.Params.ByName("table"))
 
 	if err != nil {
 		c.JSON(400, NewError(err))
@@ -150,11 +250,11 @@ func GetTableInfo(c *gin.Context) {
 }
 
 func GetHistory(c *gin.Context) {
-	c.JSON(200, DbClient.History)
+	c.JSON(200, DB(c).History)
 }
 
 func GetConnectionInfo(c *gin.Context) {
-	res, err := DbClient.Info()
+	res, err := DB(c).Info()
 
 	if err != nil {
 		c.JSON(400, NewError(err))
@@ -164,18 +264,18 @@ func GetConnectionInfo(c *gin.Context) {
 	c.JSON(200, res.Format()[0])
 }
 
-func GetSequences(c *gin.Context) {
-	res, err := DbClient.Sequences()
-	serveResult(res, err, c)
-}
-
 func GetActivity(c *gin.Context) {
-	res, err := DbClient.Activity()
+	res, err := DB(c).Activity()
 	serveResult(res, err, c)
 }
 
 func GetTableIndexes(c *gin.Context) {
-	res, err := DbClient.TableIndexes(c.Params.ByName("table"))
+	res, err := DB(c).TableIndexes(c.Params.ByName("table"))
+	serveResult(res, err, c)
+}
+
+func GetTableConstraints(c *gin.Context) {
+	res, err := DB(c).TableConstraints(c.Params.ByName("table"))
 	serveResult(res, err, c)
 }
 
@@ -185,26 +285,33 @@ func HandleQuery(query string, c *gin.Context) {
 		query = string(rawQuery)
 	}
 
-	result, err := DbClient.Query(query)
+	result, err := DB(c).Query(query)
 	if err != nil {
 		c.JSON(400, NewError(err))
 		return
 	}
 
-	q := c.Request.URL.Query()
+	format := getQueryParam(c, "format")
+	filename := getQueryParam(c, "filename")
 
-	if len(q["format"]) > 0 && q["format"][0] == "csv" {
-		filename := fmt.Sprintf("pgweb-%v.csv", time.Now().Unix())
-		if len(q["filename"]) > 0 && q["filename"][0] != "" {
-			filename = q["filename"][0]
-		}
-
-		c.Writer.Header().Set("Content-disposition", "attachment;filename="+filename)
-		c.Data(200, "text/csv", result.CSV())
-		return
+	if filename == "" {
+		filename = fmt.Sprintf("pgweb-%v.%v", time.Now().Unix(), format)
 	}
 
-	c.JSON(200, result)
+	if format != "" {
+		c.Writer.Header().Set("Content-disposition", "attachment;filename="+filename)
+	}
+
+	switch format {
+	case "csv":
+		c.Data(200, "text/csv", result.CSV())
+	case "json":
+		c.Data(200, "applicaiton/json", result.JSON())
+	case "xml":
+		c.XML(200, result)
+	default:
+		c.JSON(200, result)
+	}
 }
 
 func GetBookmarks(c *gin.Context) {
